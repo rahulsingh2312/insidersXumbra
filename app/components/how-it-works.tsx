@@ -17,7 +17,7 @@ export default function HowItWorks() {
           <Step
             n="01"
             title="Connect & deposit SOL"
-            body="Solana wallet adapter — Phantom, Backpack, Solflare. Drop in the size you want to bet. We never custody your keys."
+            body="Solana wallet adapter, Phantom, Backpack, Solflare. Drop in the size you want to bet. We never custody your keys."
             visual={<DepositVisual />}
           />
           <Step

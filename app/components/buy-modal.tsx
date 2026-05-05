@@ -461,7 +461,7 @@ function ExecuteStep({
     if (progress < 55) return { label: "Funding wallets via Umbra", icon: <PhaseIcon kind="shield" /> };
     if (progress < 90) return { label: "Filling order book", icon: <PhaseIcon kind="bolt" /> };
     if (progress < 100) return { label: "Confirming on Polygon", icon: <PhaseIcon kind="check-loading" /> };
-    return { label: "Filled — receipts in your portfolio", icon: <PhaseIcon kind="check" /> };
+    return { label: "Filled. Receipts in your portfolio", icon: <PhaseIcon kind="check" /> };
   }, [progress]);
 
   return (

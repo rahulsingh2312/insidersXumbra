@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Insiders — Incognito mode for your Polymarket trades",
+  title: "Insiders · Incognito mode for your Polymarket trades",
   description:
     "Hide your size on Polymarket. Insiders splits your order across hundreds of stealth wallets, fills the best book without moving the chart, then aggregates winnings back to you.",
   icons: {

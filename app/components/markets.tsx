@@ -247,7 +247,7 @@ export default function Markets() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder='Search markets — try "Bitcoin", "election", "Fed"...'
+              placeholder='Search markets, try "Bitcoin", "election", "Fed"...'
               className="w-full bg-transparent text-base text-black placeholder:text-black/40 focus:outline-none"
               autoComplete="off"
               spellCheck={false}

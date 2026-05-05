@@ -81,7 +81,7 @@ export default function DepositModal({
     } catch (e: unknown) {
       setQuoteError(
         e instanceof Error
-          ? `${e.message} — bridge.polymarket.com may be unreachable from this network.`
+          ? `${e.message}. bridge.polymarket.com may be unreachable from this network.`
           : "Quote failed",
       );
     } finally {
@@ -222,7 +222,7 @@ function ProvisionStep({
       : progress < 100
       ? { label: "Verifying privacy guarantees", icon: <ProvIcon kind="check-loading" /> }
       : ready
-      ? { label: "Wallets provisioned — ready to deposit", icon: <ProvIcon kind="check" /> }
+      ? { label: "Wallets provisioned. Ready to deposit", icon: <ProvIcon kind="check" /> }
       : { label: "Waiting for bridge response", icon: <ProvIcon kind="check-loading" /> };
 
   const dots = Math.min(120, walletCount);
@@ -293,7 +293,7 @@ function ProvisionStep({
 
       {error && (
         <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
-          Bridge call failed: {error}. Provisioning continues — retry from your dashboard.
+          Bridge call failed: {error}. Provisioning continues, retry from your dashboard.
         </div>
       )}
 
