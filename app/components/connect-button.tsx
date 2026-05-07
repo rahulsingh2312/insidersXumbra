@@ -4,6 +4,7 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { useMemo } from "react";
 import { useModals } from "./modal-store";
+import { useWalletBalance, fmtBalance } from "./wallet-balance";
 
 type Variant = "primary" | "secondary" | "nav";
 
@@ -19,6 +20,7 @@ export default function ConnectButton({
   const { connected, publicKey, disconnect, connecting } = useWallet();
   const { setVisible } = useWalletModal();
   const { openDeposit } = useModals();
+  const balance = useWalletBalance();
 
   const short = useMemo(() => {
     if (!publicKey) return "";
@@ -41,16 +43,29 @@ export default function ConnectButton({
       ? "cta-secondary inline-flex h-12 items-center gap-2 rounded-full px-6 text-base font-semibold"
       : "inline-flex h-9 items-center gap-2 rounded-full border border-black/10 bg-white/70 px-4 text-sm font-semibold text-black backdrop-blur-md transition hover:bg-white";
 
+  const isNav = variant === "nav";
+
   return (
-    <div className={variant === "nav" ? "flex items-center gap-2" : "flex items-center gap-2"}>
+    <div className="flex items-center gap-2">
+      {connected && (
+        <span
+          className={
+            isNav
+              ? "inline-flex h-9 items-center gap-1.5 rounded-full border border-black/10 bg-white/70 px-3 text-sm font-semibold text-black backdrop-blur-md"
+              : "inline-flex h-12 items-center gap-1.5 rounded-full border border-black/10 bg-white/70 px-4 text-sm font-semibold text-black backdrop-blur-md"
+          }
+          title="Wallet balance"
+        >
+          <CoinIcon className={isNav ? "h-3.5 w-3.5 text-[#0082f3]" : "h-4 w-4 text-[#0082f3]"} />
+          <span className="font-mono">{fmtBalance(balance)}</span>
+        </span>
+      )}
       <button type="button" onClick={onClick} className={`${base} ${className}`}>
-        <WalletIcon className={variant === "nav" ? "h-4 w-4" : "h-5 w-5"} />
+        <WalletIcon className={isNav ? "h-4 w-4" : "h-5 w-5"} />
         {connecting
           ? "Connecting…"
           : connected && publicKey
           ? `${ctaWhenConnected} · ${short}`
-          : variant === "nav"
-          ? "Connect wallet"
           : "Connect wallet"}
         {connected && (
           <span className="ml-1 rounded-full bg-emerald-400/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-700">
@@ -58,7 +73,7 @@ export default function ConnectButton({
           </span>
         )}
       </button>
-      {connected && variant !== "nav" && (
+      {connected && !isNav && (
         <button
           type="button"
           onClick={() => disconnect()}
@@ -73,6 +88,16 @@ export default function ConnectButton({
         </button>
       )}
     </div>
+  );
+}
+
+function CoinIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9 9h4.5a2 2 0 0 1 0 4H10a2 2 0 0 0 0 4h5" />
+      <path d="M12 6v2M12 16v2" />
+    </svg>
   );
 }
 

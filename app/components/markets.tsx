@@ -2,23 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useModals } from "./modal-store";
+import { fetchActiveMarkets, fetchAssetPrices, type HasuraMarket } from "../lib/hasura";
 
 const API_BASE = "https://insiders-api.polyinsiders.com/api";
 const PAGE_SIZE = 6;
 
-type ApiMarket = {
-  conditionId: string;
-  marketTitle: string;
-  outcome?: string;
-  side?: string;
-  eventSlug?: string;
-  totalSignals?: number;
-  smartMoneyCount?: number;
-  totalVolume?: number;
-  avgPrice?: number;
-  latestSignalAt?: string;
-  tags?: string[];
-  icon?: string; // enriched lazily from /market/market/<slug>
+type TrendingMarket = HasuraMarket & {
+  yesProb?: number;
 };
 
 type SearchMarket = {
@@ -27,6 +17,8 @@ type SearchMarket = {
   slug: string;
   icon?: string;
   assetIds?: string[];
+  yesProb?: number;
+  endDate?: string;
 };
 
 type DisplayMarket = {
@@ -94,24 +86,29 @@ function initialFor(title: string): string {
 export default function Markets() {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState("All");
-  const [trending, setTrending] = useState<ApiMarket[] | null>(null);
+  const [trending, setTrending] = useState<TrendingMarket[] | null>(null);
   const [searchResults, setSearchResults] = useState<SearchMarket[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
   const debounceRef = useRef<number | null>(null);
+  const enrichedRef = useRef<Set<string>>(new Set());
 
-  // initial load — trending active markets with signals
+  // initial load — pull active markets from Hasura, sort by volume desc client-side
+  // (sorting by volume server-side times out on this dataset).
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         setLoading(true);
-        const res = await fetch(`${API_BASE}/v13/markets/active`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        if (!cancelled) setTrending(json?.data ?? []);
+        const ms = await fetchActiveMarkets({ windowDays: 240, limit: 200 });
+        if (cancelled) return;
+        const sorted = [...ms].sort(
+          (a, b) => Number(b.volume ?? 0) - Number(a.volume ?? 0),
+        );
+        setTrending(sorted);
       } catch (e: unknown) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load");
       } finally {
@@ -123,50 +120,168 @@ export default function Markets() {
     };
   }, []);
 
-  // lazily enrich trending markets with icons (fetch in parallel batches)
+  // fetch yes-side prices for visible trending markets via MarketAsset (Hasura).
+  // batches all visible asset ids into a single query; skips ones already priced.
   useEffect(() => {
+    if (query.trim()) return;
     if (!trending || trending.length === 0) return;
-    const needsIcon = trending.filter((m) => !m.icon && m.eventSlug);
-    if (needsIcon.length === 0) return;
+    const tagFiltered =
+      active === "All"
+        ? trending
+        : trending.filter((m) =>
+            (m.PolymarketMarketTags ?? []).some(
+              (t) => t.PolymarketTag.slug.toLowerCase() === active.toLowerCase(),
+            ),
+          );
+    const visible = tagFiltered.slice(0, visibleCount);
+    const ids: string[] = [];
+    for (const m of visible) {
+      if (m.yesProb != null) continue;
+      if (enrichedRef.current.has(m.conditionId)) continue;
+      const yesId = (m.assetIds ?? [])[0];
+      if (yesId) ids.push(yesId);
+      enrichedRef.current.add(m.conditionId);
+    }
+    if (ids.length === 0) return;
+
     let cancelled = false;
     (async () => {
-      // batch 8 at a time to avoid hammering
-      for (let i = 0; i < needsIcon.length; i += 8) {
-        if (cancelled) return;
-        const batch = needsIcon.slice(i, i + 8);
-        const results = await Promise.all(
-          batch.map(async (m) => {
-            try {
-              const res = await fetch(
-                `${API_BASE}/market/market/${encodeURIComponent(m.eventSlug!)}`,
-              );
-              if (!res.ok) return null;
-              const json = await res.json();
-              return {
-                conditionId: m.conditionId,
-                icon: json?.data?.image || json?.image || null,
-              };
-            } catch {
-              return null;
-            }
-          }),
-        );
-        if (cancelled) return;
+      try {
+        const priceById = await fetchAssetPrices(ids);
+        if (cancelled || priceById.size === 0) return;
         setTrending((prev) => {
           if (!prev) return prev;
-          const map = new Map(
-            results.filter(Boolean).map((r) => [r!.conditionId, r!.icon]),
-          );
-          return prev.map((m) =>
-            map.has(m.conditionId) ? { ...m, icon: map.get(m.conditionId) ?? undefined } : m,
-          );
+          let changed = false;
+          const next = prev.map((m) => {
+            if (m.yesProb != null) return m;
+            const yesId = (m.assetIds ?? [])[0];
+            const p = yesId ? priceById.get(yesId) : undefined;
+            if (p == null) return m;
+            changed = true;
+            return { ...m, yesProb: p };
+          });
+          return changed ? next : prev;
         });
+      } catch {
+        /* leave prices blank, MarketCard will hide the bar */
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [trending?.length]);
+  }, [trending, active, visibleCount, query]);
+
+  // search enrichment — /username/search returns only id/title/slug/icon, so for
+  // the visible search results we hit /market/market/<slug> for prices + endDate
+  // and hide closed/expired ones via hiddenKeys.
+  useEffect(() => {
+    if (!query.trim() || !searchResults) return;
+    const now = Date.now();
+    const filtered = searchResults.filter(
+      (m) =>
+        !hiddenKeys.has(m.id) &&
+        (!m.endDate || new Date(m.endDate).getTime() > now),
+    );
+    const todo = filtered
+      .slice(0, visibleCount)
+      .filter((m) => m.slug && !enrichedRef.current.has(m.id));
+    if (todo.length === 0) return;
+    todo.forEach((m) => enrichedRef.current.add(m.id));
+
+    // intentionally not cancelling on cleanup: rapid keystrokes (e.g. "elo" → "elon")
+    // can re-fire this effect before the first batch of fetches resolves. cancelling
+    // would drop those results and the enrichedRef entries would block re-fetching,
+    // so prices would never appear. setSearchResults uses setter form, so applying
+    // enrichment data to a since-replaced list only updates rows whose id still matches.
+    (async () => {
+      const results = await Promise.all(
+        todo.map(async (m) => {
+          try {
+            const res = await fetch(
+              `${API_BASE}/market/market/${encodeURIComponent(m.slug)}`,
+            );
+            if (!res.ok) return null;
+            const json = await res.json();
+            const icon: string | null =
+              json?.data?.image ?? json?.image ?? json?.icon ?? null;
+
+            // /market/market/<slug> can return either an event (with nested
+            // markets[]) or a single market (outcomePrices at top level). Pick
+            // whichever shape we actually got.
+            const inner: Array<Record<string, unknown>> = Array.isArray(json?.markets)
+              ? (json.markets as Array<Record<string, unknown>>)
+              : [];
+            const matched: Record<string, unknown> | null =
+              inner.find((mi) => String(mi?.id) === m.id) ??
+              inner[0] ??
+              (json && typeof json === "object" ? (json as Record<string, unknown>) : null);
+
+            let yesProb: number | undefined;
+            if (matched) {
+              try {
+                const op = matched.outcomePrices;
+                const arr = typeof op === "string" ? JSON.parse(op) : op;
+                if (Array.isArray(arr) && arr[0] != null) yesProb = Number(arr[0]);
+              } catch {
+                /* ignore */
+              }
+              if (yesProb == null && matched.lastTradePrice != null)
+                yesProb = Number(matched.lastTradePrice);
+              if (
+                yesProb == null &&
+                matched.bestBid != null &&
+                matched.bestAsk != null
+              )
+                yesProb = (Number(matched.bestBid) + Number(matched.bestAsk)) / 2;
+            }
+            const closedFlag =
+              json?.closed === true ||
+              json?.archived === true ||
+              matched?.closed === true ||
+              matched?.archived === true;
+            const endIso = matched?.endDate ?? json?.endDate;
+            const endMs = endIso ? new Date(String(endIso)).getTime() : null;
+            const hidden =
+              closedFlag ||
+              (endMs != null && Number.isFinite(endMs) && endMs <= now);
+            return { key: m.id, icon, yesProb, hidden };
+          } catch {
+            return null;
+          }
+        }),
+      );
+      const valid = results.filter((r) => r != null) as Array<{
+        key: string;
+        icon: string | null;
+        yesProb?: number;
+        hidden: boolean;
+      }>;
+      if (valid.length === 0) return;
+      const toHide = valid.filter((r) => r.hidden).map((r) => r.key);
+      if (toHide.length > 0) {
+        setHiddenKeys((prev) => {
+          const next = new Set(prev);
+          toHide.forEach((k) => next.add(k));
+          return next;
+        });
+      }
+      const byKey = new Map(valid.map((r) => [r.key, r]));
+      setSearchResults((prev) => {
+        if (!prev) return prev;
+        let changed = false;
+        const next = prev.map((m) => {
+          const r = byKey.get(m.id);
+          if (!r) return m;
+          const nextIcon = m.icon ?? r.icon ?? undefined;
+          const nextYes = m.yesProb ?? r.yesProb;
+          if (nextIcon === m.icon && nextYes === m.yesProb) return m;
+          changed = true;
+          return { ...m, icon: nextIcon, yesProb: nextYes };
+        });
+        return changed ? next : prev;
+      });
+    })();
+  }, [searchResults, visibleCount, query, hiddenKeys]);
 
   // reset pagination when filter/search changes
   useEffect(() => {
@@ -200,33 +315,50 @@ export default function Markets() {
   }, [query]);
 
   const display: DisplayMarket[] = useMemo(() => {
+    const now = Date.now();
     if (query.trim() && searchResults) {
-      return searchResults.map((m) => ({
-        key: m.id,
-        title: m.title,
-        slug: m.slug,
-        icon: m.icon,
-      }));
+      return searchResults
+        .filter(
+          (m) =>
+            !hiddenKeys.has(m.id) &&
+            (!m.endDate || new Date(m.endDate).getTime() > now),
+        )
+        .map((m) => ({
+          key: m.id,
+          title: m.title,
+          slug: m.slug,
+          icon: m.icon,
+          yesProb: m.yesProb,
+        }));
     }
     const list = trending ?? [];
     const filtered =
       active === "All"
         ? list
-        : list.filter((m) => (m.tags ?? []).some((t) => t.toLowerCase() === active.toLowerCase()));
-    return filtered.map((m) => ({
-      key: m.conditionId,
-      title: m.marketTitle,
-      slug: m.eventSlug,
-      icon: m.icon,
-      category: m.tags?.[0],
-      tags: m.tags,
-      volume: m.totalVolume,
-      yesProb: m.avgPrice,
-      signals: m.totalSignals,
-      smartMoney: m.smartMoneyCount,
-      outcome: m.outcome,
-    }));
-  }, [query, searchResults, trending, active]);
+        : list.filter((m) =>
+            (m.PolymarketMarketTags ?? []).some(
+              (t) => t.PolymarketTag.slug.toLowerCase() === active.toLowerCase(),
+            ),
+          );
+    return filtered
+      .filter((m) => !hiddenKeys.has(m.conditionId))
+      .map((m) => {
+        const tags = (m.PolymarketMarketTags ?? [])
+          .map((t) => t.PolymarketTag.slug)
+          .filter(Boolean);
+        const vol = Number(m.volume ?? 0);
+        return {
+          key: m.conditionId,
+          title: m.title,
+          slug: m.slug,
+          icon: m.icon ?? undefined,
+          category: tags[0],
+          tags,
+          volume: Number.isFinite(vol) ? vol : undefined,
+          yesProb: m.yesProb,
+        };
+      });
+  }, [query, searchResults, trending, active, hiddenKeys]);
 
   return (
     <section id="markets" className="relative px-4 py-24 sm:px-8">
